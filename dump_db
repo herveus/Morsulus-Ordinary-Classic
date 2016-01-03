@@ -56,6 +56,8 @@ my $regs = $ord->Registration->search($search);
 while (my $reg = $regs->next)
 {
     #print STDERR 
+    my $item = $ord->get_registration($reg);
+    next if $ARGV{-nodescs} and $item->descs;
     print $ord->get_registration($reg)->canonicalize->to_string, "\n";
 }
 
@@ -123,6 +125,10 @@ Limit items to those without a release date.
 =item -armonly
 
 Limit items to those with armory.
+
+=item -nodescs
+
+Limit items to those without descs.
 
 =item -regid <regid>...
 

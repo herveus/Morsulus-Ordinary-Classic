@@ -345,7 +345,7 @@ sub drop_note
     my $self = shift;
     my ($reg, $note) = @_;
     $note = $self->Note->find({note_text => $note}) unless ref($note);
-    $self->RegistrationNote->delete({reg_id => $reg->reg_id, note_id => $note->note_id});
+    $self->RegistrationNote->find({reg_id => $reg->reg_id, note_id => $note->note_id})->delete;
 }
 
 sub add_desc

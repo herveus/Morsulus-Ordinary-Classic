@@ -5,14 +5,16 @@ use warnings;
 use Morsulus::Ordinary::Classic;
 use Morsulus::Ordinary::Legacy;
 use Getopt::Euclid;
-use IO::Prompter;
+use IO::Prompter [-v];
+use File::Temp;
 use 5.16.0;
 
 my $ord = Morsulus::Ordinary::Classic->new(dbname => $ARGV{-db});
 
-while (prompt "Search by...", "-s", -menu => [ qw/ reg_owner_name blazon description exit / ])
+while ($_ = prompt "Search by...", "-s", -menu => [ qw/ reg_owner_name reg_id blazon description exit / ])
 {
     if ($_ eq 'reg_owner_name') { search_by_owner_name(); next; }
+    if ($_ eq 'reg_id') { search_by_reg_id(); next; }
     if ($_ eq 'blazon') { search_by_blazon(); next; }
     if ($_ eq 'description') { search_by_description(); next; }
     last;
@@ -22,11 +24,26 @@ sub search_by_owner_name
 {
     my $pat = prompt("Enter name pattern:");
     return if $pat eq '';
-    my @regs = $ord->Registration->search({reg_owner_name => { 'regexp', "$pat" }});
+    my @regs = $ord->Registration->search({reg_owner_name => { 'regexp', $pat }});
     my %regs = map { $ord->get_registration($_)->canonicalize->to_string => $_ } @regs;
     while ((my $reg_txt = prompt -number, "Select an item:", -menu => ["done", keys %regs]) ne "done")
     {
         edit_entry($regs{$reg_txt});
+        %regs = map { $ord->get_registration($_)->canonicalize->to_string => $_ } @regs;
+    }
+}
+
+sub search_by_reg_id
+{
+    my $pat = prompt("Enter reg_id(s):");
+    return if $pat eq '';
+    my @reg_ids = split(/\D+/, $pat);
+    my @regs = $ord->Registration->search({reg_id => [ @reg_ids ] });
+    my %regs = map { $ord->get_registration($_)->canonicalize->to_string => $_ } @regs;
+    while ((my $reg_txt = prompt -number, "Select an item:", -menu => ["done", keys %regs]) ne "done")
+    {
+        edit_entry($regs{$reg_txt});
+        %regs = map { $ord->get_registration($_)->canonicalize->to_string => $_ } @regs;
     }
 }
 
@@ -35,7 +52,7 @@ sub search_by_blazon
     my $pat = prompt "Enter blazon pattern:";
     return if $pat eq '';
     my @regs = $ord->Registration->search({
-        'text_blazon.blazon' => { 'regexp', "$pat" },
+        'text_blazon.blazon' => { 'regexp', $pat },
         },
         { join => 'text_blazon' });
     my %regs = map { $ord->get_registration($_)->canonicalize->to_string => $_ } @regs;
@@ -93,6 +110,57 @@ sub display_dates
         "x) done\n";
 }
 
+sub edit_text
+{
+    my ($item) = @_;
+    if (defined $item->text_blazon_id)
+    {
+        print "editing blazon not implemented\n";
+        return;
+    }
+    my $text_name = $item->text_name->name;
+    while (1)
+    {
+        my $new_text_name = prompt "\ncurrentvalue: '", $text_name || '<none>',
+            "'\npress ENTER to leave alone\nenter - to blank out\nenter new text_name: ";
+        return if $new_text_name eq '';
+        return $item->text_name('') if $new_text_name eq '-';
+        my $new_name = $ord->add_name($new_text_name);
+        return $item->text_name($new_name);
+    }
+}
+
+sub edit_reg_owner_name
+{
+    my ($item) = @_;
+    my $reg_owner_name = $item->reg_owner_name->name;
+    while (1)
+    {
+        my $new_reg_owner_name = prompt "\ncurrentvalue: '", $reg_owner_name || '<none>',
+            "'\npress ENTER to leave alone\nenter new reg_owner_name: ";
+        return if $new_reg_owner_name eq '';
+        my $new_name = $ord->add_name($new_reg_owner_name);
+        return $item->reg_owner_name($new_name);
+    }
+}
+
+sub edit_action
+{
+    my ($item) = @_;
+    my $action = $item->action;
+    my @actions = $ord->Action->search(undef, { order_by => 'action_id' });
+    my %actions = map { $_->action_id => $_} @actions; # keyed on name
+    while (1)
+    {
+        print join("\n", map { join(': ', $_->action_id || '-', $_->action_description || '<none>') } @actions);
+        my $newaction = prompt "\ncurrentvalue: '", $action || '<none>',
+            "'\npress ENTER to leave alone\n\nor select code from list: ";
+        return if $newaction eq '';
+        return $item->action($actions{$newaction}) if exists $actions{$newaction};
+    }
+}
+
+
 sub edit_dates
 {
     my ($item) = @_;
@@ -115,10 +183,27 @@ sub edit_date
         my $newdate = prompt "\ncurrent value: '", $date->date, "'\npress ENTER to leave alone\nenter - to blank out\nenter new date as yyyymm: ";
         return $date if $newdate eq '';
         $newdate = '' if $newdate eq '-';
-        my $checked_date = $ord->Date->find({ date => "$newdate" });
+        my $checked_date = $ord->Date->find({ date => $newdate });
         return $checked_date if defined $checked_date;
         print "bad input\n";
     }
+}
+
+sub edit_descs
+{
+    my ($item) = @_;
+    my $tmp_db = File::Temp->new(SUFFIX => '.db');
+    print $tmp_db $ord->get_registration($item)->to_string;
+    system 'index', "$tmp_db";
+    # read results into new item thingy
+    seek $tmp_db, 0, 0;
+    my $newitem = <$tmp_db>;
+    chomp $newitem;
+    my $newentry = Morsulus::Ordinary::Legacy->from_string($newitem);
+    my ($blazon) = $ord->add_blazon($newentry->text);
+    $ord->drop_descs($blazon);
+    $ord->add_desc($_, $blazon) for $newentry->split_descs;
+    
 }
 
 sub edit_kingdom
@@ -176,7 +261,7 @@ sub add_note
     {
         my $note_text = prompt "Enter new note or note pattern: ";
         return if $note_text eq '';
-        my @notes = $ord->Note->search({note_text => { 'regexp', "$note_text" }});
+        my @notes = $ord->Note->search({note_text => { 'regexp', $note_text }});
         if (@notes == 0)
         {   
             my $action = prompt "Note not found in existing notes; add new note?", "-y";
